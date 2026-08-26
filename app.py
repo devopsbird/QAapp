@@ -342,7 +342,7 @@ st.markdown("### Expected file format")
 st.code(
 """Q: Tell me about yourself.
 
-A: My name is Anas. I have a background in technology and customer service.
+A: My name is . I have a background in technology and customer service.
 
 Q: Why do you want to work here?
 
