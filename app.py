@@ -2,7 +2,6 @@ import streamlit as st
 import re
 import json
 import io
-import wave
 
 from google.cloud import texttospeech
 from google.oauth2 import service_account
@@ -67,16 +66,6 @@ def get_tts_client():
 # ---------------------------------------------------
 
 def parse_qa(text):
-    """
-    Expected format:
-
-    Q: Tell me about yourself.
-    A: My name is...
-
-    Q: Why do you want this job?
-    A: Because...
-    """
-
     pattern = r"""
         (?:^|\n)\s*
         (?:Q|Question)\s*[:\-]\s*
@@ -126,7 +115,7 @@ def make_natural_with_gemini(pairs):
 
     model_name = st.secrets.get(
         "GEMINI_MODEL",
-        "gemini-3.7-flash"
+        "gemini-2.5-flash"
     )
 
     prompt = f"""
@@ -144,10 +133,7 @@ IMPORTANT RULES:
 4. Do NOT remove important information from the answers.
 5. You may only make small conversational improvements.
 6. Keep the candidate's language simple and natural.
-7. The interviewer may use very short transitions such as:
-   "Great, thank you."
-   "Can you tell me about..."
-   "Okay. What about..."
+7. The interviewer may use very short transitions.
 8. Do not turn it into a podcast.
 9. This is a realistic job interview practice session.
 
@@ -183,10 +169,10 @@ Interview content:
 
 
 # ---------------------------------------------------
-# TEXT TO SPEECH
+# TEXT TO SPEECH - MP3
 # ---------------------------------------------------
 
-def synthesize_wav(
+def synthesize_mp3(
     client,
     text,
     voice_name,
@@ -202,7 +188,7 @@ def synthesize_wav(
     )
 
     audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.LINEAR16
+        audio_encoding=texttospeech.AudioEncoding.MP3
     )
 
     response = client.synthesize_speech(
@@ -215,49 +201,16 @@ def synthesize_wav(
 
 
 # ---------------------------------------------------
-# WAV COMBINATION
+# COMBINE MP3 CHUNKS
 # ---------------------------------------------------
 
-def combine_wav_files(audio_chunks, pause_ms=500):
-    output = io.BytesIO()
-
-    first_audio = io.BytesIO(audio_chunks[0])
-
-    with wave.open(first_audio, "rb") as first_wave:
-        channels = first_wave.getnchannels()
-        sample_width = first_wave.getsampwidth()
-        frame_rate = first_wave.getframerate()
-
-    with wave.open(output, "wb") as output_wave:
-        output_wave.setnchannels(channels)
-        output_wave.setsampwidth(sample_width)
-        output_wave.setframerate(frame_rate)
-
-        silence_frames = int(
-            frame_rate * pause_ms / 1000
-        )
-
-        silence = (
-            b"\x00"
-            * silence_frames
-            * channels
-            * sample_width
-        )
-
-        for chunk in audio_chunks:
-            audio_io = io.BytesIO(chunk)
-
-            with wave.open(audio_io, "rb") as wav_file:
-                frames = wav_file.readframes(
-                    wav_file.getnframes()
-                )
-
-                output_wave.writeframes(frames)
-                output_wave.writeframes(silence)
-
-    output.seek(0)
-
-    return output.getvalue()
+def combine_mp3_files(audio_chunks):
+    """
+    Google TTS returns complete MP3 chunks.
+    Concatenating MP3 streams works for playback/download
+    when all chunks use the same encoding settings.
+    """
+    return b"".join(audio_chunks)
 
 
 # ---------------------------------------------------
@@ -318,14 +271,6 @@ candidate_voice = st.sidebar.selectbox(
     ]
 )
 
-pause_between = st.sidebar.slider(
-    "Pause between speakers",
-    min_value=200,
-    max_value=1500,
-    value=500,
-    step=100
-)
-
 
 # ---------------------------------------------------
 # FILE UPLOAD
@@ -336,17 +281,16 @@ uploaded_file = st.file_uploader(
     type=["txt"]
 )
 
-
 st.markdown("### Expected file format")
 
 st.code(
 """Q: Tell me about yourself.
 
-A: My name is . I have a background in technology and customer service.
+A: My name is Anas. I have a background in technology and customer service.
 
 Q: Why do you want to work here?
 
-A: I enjoy technology and helping people. I like helping people become more comfortable with technology.
+A: I enjoy technology and helping people.
 """,
     language="text"
 )
@@ -432,7 +376,8 @@ if uploaded_file is not None:
 
             for pair in final_pairs:
 
-                interviewer_audio = synthesize_wav(
+                # Interviewer
+                interviewer_audio = synthesize_mp3(
                     client,
                     pair["question"],
                     interviewer_voice
@@ -443,11 +388,13 @@ if uploaded_file is not None:
                 )
 
                 current_part += 1
+
                 progress.progress(
                     current_part / total_parts
                 )
 
-                candidate_audio = synthesize_wav(
+                # Candidate
+                candidate_audio = synthesize_mp3(
                     client,
                     pair["answer"],
                     candidate_voice
@@ -458,24 +405,25 @@ if uploaded_file is not None:
                 )
 
                 current_part += 1
+
                 progress.progress(
                     current_part / total_parts
                 )
 
         except Exception as e:
+
             st.error(
                 "Google Text-to-Speech returned an error."
             )
+
             st.code(str(e))
+
             st.stop()
 
-        with st.spinner(
-            "Combining interview audio..."
-        ):
-            final_audio = combine_wav_files(
-                audio_chunks,
-                pause_ms=pause_between
-            )
+        # Combine all MP3 pieces
+        final_audio = combine_mp3_files(
+            audio_chunks
+        )
 
         progress.progress(1.0)
 
@@ -483,20 +431,32 @@ if uploaded_file is not None:
             "Interview generated successfully!"
         )
 
+        # ---------------------------------------------------
+        # AUDIO PLAYER
+        # ---------------------------------------------------
+
         st.markdown("## 🎧 Your Interview")
 
         st.audio(
             final_audio,
-            format="audio/wav"
+            format="audio/mp3"
         )
 
+        # ---------------------------------------------------
+        # DOWNLOAD MP3
+        # ---------------------------------------------------
+
         st.download_button(
-            "⬇️ Download Interview",
+            "⬇️ Download Interview MP3",
             data=final_audio,
-            file_name="interview_practice.wav",
-            mime="audio/wav",
+            file_name="interview_practice.mp3",
+            mime="audio/mpeg",
             use_container_width=True
         )
+
+        # ---------------------------------------------------
+        # FINAL TEXT
+        # ---------------------------------------------------
 
         st.markdown("## 💬 Final Conversation")
 
