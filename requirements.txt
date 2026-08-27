@@ -2,3 +2,4 @@ streamlit
 google-cloud-texttospeech
 google-auth
 google-genai
+pydub
