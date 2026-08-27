@@ -2,9 +2,11 @@ import streamlit as st
 import re
 import json
 import io
+import wave
 
 from google.cloud import texttospeech
 from google.oauth2 import service_account
+from pydub import AudioSegment
 
 # Gemini is optional
 try:
@@ -133,7 +135,10 @@ IMPORTANT RULES:
 4. Do NOT remove important information from the answers.
 5. You may only make small conversational improvements.
 6. Keep the candidate's language simple and natural.
-7. The interviewer may use very short transitions.
+7. The interviewer may use very short transitions such as:
+   "Great, thank you."
+   "Can you tell me about..."
+   "Okay. What about..."
 8. Do not turn it into a podcast.
 9. This is a realistic job interview practice session.
 
@@ -169,10 +174,10 @@ Interview content:
 
 
 # ---------------------------------------------------
-# TEXT TO SPEECH - MP3
+# TEXT TO SPEECH
 # ---------------------------------------------------
 
-def synthesize_mp3(
+def synthesize_wav(
     client,
     text,
     voice_name,
@@ -188,7 +193,7 @@ def synthesize_mp3(
     )
 
     audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3
+        audio_encoding=texttospeech.AudioEncoding.LINEAR16
     )
 
     response = client.synthesize_speech(
@@ -201,16 +206,71 @@ def synthesize_mp3(
 
 
 # ---------------------------------------------------
-# COMBINE MP3 CHUNKS
+# WAV COMBINATION
 # ---------------------------------------------------
 
-def combine_mp3_files(audio_chunks):
-    """
-    Google TTS returns complete MP3 chunks.
-    Concatenating MP3 streams works for playback/download
-    when all chunks use the same encoding settings.
-    """
-    return b"".join(audio_chunks)
+def combine_wav_files(audio_chunks, pause_ms=500):
+    output = io.BytesIO()
+
+    first_audio = io.BytesIO(audio_chunks[0])
+
+    with wave.open(first_audio, "rb") as first_wave:
+        channels = first_wave.getnchannels()
+        sample_width = first_wave.getsampwidth()
+        frame_rate = first_wave.getframerate()
+
+    with wave.open(output, "wb") as output_wave:
+        output_wave.setnchannels(channels)
+        output_wave.setsampwidth(sample_width)
+        output_wave.setframerate(frame_rate)
+
+        silence_frames = int(
+            frame_rate * pause_ms / 1000
+        )
+
+        silence = (
+            b"\x00"
+            * silence_frames
+            * channels
+            * sample_width
+        )
+
+        for chunk in audio_chunks:
+            audio_io = io.BytesIO(chunk)
+
+            with wave.open(audio_io, "rb") as wav_file:
+                frames = wav_file.readframes(
+                    wav_file.getnframes()
+                )
+
+                output_wave.writeframes(frames)
+                output_wave.writeframes(silence)
+
+    output.seek(0)
+
+    return output.getvalue()
+
+
+# ---------------------------------------------------
+# WAV TO MP3
+# ---------------------------------------------------
+
+def convert_wav_to_mp3(wav_audio):
+    audio = AudioSegment.from_wav(
+        io.BytesIO(wav_audio)
+    )
+
+    mp3_buffer = io.BytesIO()
+
+    audio.export(
+        mp3_buffer,
+        format="mp3",
+        bitrate="192k"
+    )
+
+    mp3_buffer.seek(0)
+
+    return mp3_buffer.getvalue()
 
 
 # ---------------------------------------------------
@@ -271,6 +331,14 @@ candidate_voice = st.sidebar.selectbox(
     ]
 )
 
+pause_between = st.sidebar.slider(
+    "Pause between speakers",
+    min_value=200,
+    max_value=1500,
+    value=500,
+    step=100
+)
+
 
 # ---------------------------------------------------
 # FILE UPLOAD
@@ -281,6 +349,7 @@ uploaded_file = st.file_uploader(
     type=["txt"]
 )
 
+
 st.markdown("### Expected file format")
 
 st.code(
@@ -290,7 +359,7 @@ A: My name is Anas. I have a background in technology and customer service.
 
 Q: Why do you want to work here?
 
-A: I enjoy technology and helping people.
+A: I enjoy technology and helping people. I like helping people become more comfortable with technology.
 """,
     language="text"
 )
@@ -376,8 +445,7 @@ if uploaded_file is not None:
 
             for pair in final_pairs:
 
-                # Interviewer
-                interviewer_audio = synthesize_mp3(
+                interviewer_audio = synthesize_wav(
                     client,
                     pair["question"],
                     interviewer_voice
@@ -393,8 +461,7 @@ if uploaded_file is not None:
                     current_part / total_parts
                 )
 
-                # Candidate
-                candidate_audio = synthesize_mp3(
+                candidate_audio = synthesize_wav(
                     client,
                     pair["answer"],
                     candidate_voice
@@ -420,10 +487,32 @@ if uploaded_file is not None:
 
             st.stop()
 
-        # Combine all MP3 pieces
-        final_audio = combine_mp3_files(
-            audio_chunks
-        )
+        # Combine WAV audio
+        with st.spinner(
+            "Combining interview audio..."
+        ):
+
+            final_wav = combine_wav_files(
+                audio_chunks,
+                pause_ms=pause_between
+            )
+
+        # Convert WAV to MP3
+        with st.spinner(
+            "Converting to MP3..."
+        ):
+
+            try:
+                final_audio = convert_wav_to_mp3(
+                    final_wav
+                )
+
+            except Exception as e:
+                st.error(
+                    "Could not convert audio to MP3."
+                )
+                st.code(str(e))
+                st.stop()
 
         progress.progress(1.0)
 
